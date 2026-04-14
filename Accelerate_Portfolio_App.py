@@ -751,9 +751,9 @@ def _render_analysis(analysis: dict, meetings: dict):
     problems = analysis.get("key_problems", [])
     if problems:
         status_map = {
-            "resolved": ("✅", "#0d3320", "#16a34a", "#166534"),
-            "ongoing": ("⚠️", "#1a1207", "#fbbf24", "#92400e"),
-            "unaddressed": ("🔴", "#2d0a0a", "#dc2626", "#991b1b")
+            "resolved":    ("✅", "#f0fdf4", "#16a34a", "#86efac"),
+            "ongoing":     ("⚠️", "#fefce8", "#d97706", "#fcd34d"),
+            "unaddressed": ("🔴", "#fef2f2", "#dc2626", "#fca5a5")
         }
         for p in problems:
             stat = p.get("status","ongoing").lower()
@@ -776,12 +776,12 @@ def _render_analysis(analysis: dict, meetings: dict):
     st.markdown("#### 📊 Meeting Effectiveness")
     me_list = analysis.get("meeting_effectiveness", [])
     if me_list:
-        type_colors = {"VP":"#c4b5fd","Expert":"#6ee7b7","Panelist":"#fcd34d"}
+        type_colors = {"VP":"#7c3aed","Expert":"#059669","Panelist":"#d97706"}
         for me in sorted(me_list, key=lambda x: x.get("effectiveness_score",0), reverse=True):
             score = me.get("effectiveness_score", 0)
             tc = type_colors.get(me.get("type","Expert"), "#7eb8f7")
             is_top = me.get("is_most_impactful", False)
-            border = "2px solid #fbbf24" if is_top else "1px solid #1e2a45"
+            border = "2px solid #d97706" if is_top else "1px solid #e2e8f0"
             st.markdown(
                 f'<div style="background:#f8fafc;border:{border};border-radius:10px;padding:14px 18px;margin-bottom:8px;">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
