@@ -413,8 +413,14 @@ Provide a comprehensive analysis in this EXACT JSON format (no markdown, no extr
     "reason": "why this was the turning point"
   }},
   "biggest_unresolved_problem": "one sentence",
-  "overall_health_score": 1-10,
-  "health_rationale": "one sentence",
+  "health_before": {{
+    "score": 1-10,
+    "rationale": "one sentence on venture health BEFORE any program sessions started — based on starting stage, problem clarity, deck quality"
+  }},
+  "health_after": {{
+    "score": 1-10,
+    "rationale": "one sentence on venture health NOW after all sessions — based on progress made, problems resolved, momentum"
+  }},
   "next_priority": "top recommended next action for this venture"
 }}"""
 
@@ -716,19 +722,55 @@ def _render_analysis(analysis: dict, meetings: dict):
             )
         st.markdown("---")
 
-    # Health score
-    hs = analysis.get("overall_health_score", 5)
-    col1, col2 = st.columns([1, 3])
-    with col1:
+    # Health score — before and after
+    hb = analysis.get("health_before", {})
+    ha = analysis.get("health_after", {})
+    # Fallback for old cached analyses that only have overall_health_score
+    hs_fallback = analysis.get("overall_health_score", 5)
+    score_before = hb.get("score", max(1, hs_fallback - 2))
+    score_after  = ha.get("score", hs_fallback)
+    rationale_before = hb.get("rationale", "Baseline at program start")
+    rationale_after  = ha.get("rationale", analysis.get("health_rationale", ""))
+
+    st.markdown("#### 📈 Health Score: Before vs After")
+    hcol1, hcol2, hcol3 = st.columns([2, 1, 2])
+    with hcol1:
         st.markdown(
             f'<div class="nen-card" style="text-align:center;">'
-            f'<div style="font-size:11px;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Health Score</div>'
-            f'<div style="font-size:52px;font-family:inherit;font-weight:800;color:{health_color(hs)}">{hs}</div>'
-            f'<div style="font-size:11px;color:#475569;">/ 10</div>'
-            f'<div style="font-size:12px;color:#475569;margin-top:8px;">{analysis.get("health_rationale","")}</div>'
+            f'<div style="font-size:11px;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Before Program</div>'
+            f'<div style="font-size:52px;font-weight:800;color:{health_color(score_before)}">{score_before}</div>'
+            f'<div style="font-size:11px;color:#475569;margin-bottom:8px;">/ 10</div>'
+            f'<div style="font-size:12px;color:#374151;line-height:1.5;">{rationale_before}</div>'
             f'</div>',
             unsafe_allow_html=True
         )
+    with hcol2:
+        delta = score_after - score_before
+        arrow = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
+        color = "#16a34a" if delta > 0 else ("#dc2626" if delta < 0 else "#475569")
+        st.markdown(
+            f'<div style="text-align:center;padding:40px 0;">'
+            f'<div style="font-size:32px;color:{color};font-weight:800;">{arrow}</div>'
+            f'<div style="font-size:18px;color:{color};font-weight:700;">{("+" if delta > 0 else "")}{delta}</div>'
+            f'<div style="font-size:11px;color:#475569;margin-top:4px;">change</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    with hcol3:
+        st.markdown(
+            f'<div class="nen-card" style="text-align:center;">'
+            f'<div style="font-size:11px;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">After All Sessions</div>'
+            f'<div style="font-size:52px;font-weight:800;color:{health_color(score_after)}">{score_after}</div>'
+            f'<div style="font-size:11px;color:#475569;margin-bottom:8px;">/ 10</div>'
+            f'<div style="font-size:12px;color:#374151;line-height:1.5;">{rationale_after}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    st.markdown("")
+
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        pass  # spacer kept for layout compat
     with col2:
         sp = analysis.get("stage_progression", {})
         momentum_colors = {"strong":"#16a34a","moderate":"#60a5fa","slow":"#fbbf24","stalled":"#dc2626"}
@@ -746,56 +788,86 @@ def _render_analysis(analysis: dict, meetings: dict):
             unsafe_allow_html=True
         )
 
-    # Problems
+    # Problems — table format
     st.markdown("#### 🔍 Key Problems Identified")
     problems = analysis.get("key_problems", [])
     if problems:
-        status_map = {
-            "resolved":    ("✅", "#f0fdf4", "#16a34a", "#86efac"),
-            "ongoing":     ("⚠️", "#fefce8", "#d97706", "#fcd34d"),
-            "unaddressed": ("🔴", "#fef2f2", "#dc2626", "#fca5a5")
+        status_icons = {
+            "resolved":    ("✅", "#f0fdf4", "#16a34a"),
+            "ongoing":     ("⚠️", "#fefce8", "#d97706"),
+            "unaddressed": ("🔴", "#fef2f2", "#dc2626"),
         }
-        for p in problems:
-            stat = p.get("status","ongoing").lower()
-            icon, bg, tc, bc = status_map.get(stat, status_map["ongoing"])
-            st.markdown(
-                f'<div style="background:{bg};border:1px solid {bc};border-radius:10px;padding:12px 16px;margin-bottom:8px;">'
-                f'<div style="display:flex;align-items:center;gap:10px;">'
-                f'<span style="font-size:16px;">{icon}</span>'
-                f'<span style="color:{tc};font-size:12px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">{stat}</span>'
-                f'<span style="color:#475569;font-size:11px;">via {p.get("source","")}</span>'
-                f'</div>'
-                f'<div style="color:#1e293b;margin-top:6px;font-size:14px;">{p.get("problem","")}</div>'
-                f'</div>',
-                unsafe_allow_html=True
+        # Build table HTML
+        rows_html = ""
+        for i, p in enumerate(problems):
+            stat = p.get("status", "ongoing").lower()
+            icon, bg, tc = status_icons.get(stat, status_icons["ongoing"])
+            row_bg = bg if i % 2 == 0 else "#ffffff"
+            rows_html += (
+                f'<tr style="background:{row_bg};">'
+                f'<td style="padding:10px 14px;font-size:13px;color:#1e293b;line-height:1.5;width:55%;">{p.get("problem","")}</td>'
+                f'<td style="padding:10px 14px;font-size:12px;color:#475569;width:25%;">{p.get("source","")}</td>'
+                f'<td style="padding:10px 14px;width:20%;text-align:center;">'
+                f'<span style="background:{bg};color:{tc};border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;">{icon} {stat.capitalize()}</span>'
+                f'</td>'
+                f'</tr>'
             )
+        table_html = (
+            f'<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;font-family:inherit;">'
+            f'<thead>'
+            f'<tr style="background:#f1f5f9;">'
+            f'<th style="padding:10px 14px;text-align:left;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Problem</th>'
+            f'<th style="padding:10px 14px;text-align:left;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Identified Via</th>'
+            f'<th style="padding:10px 14px;text-align:center;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Status</th>'
+            f'</tr></thead>'
+            f'<tbody>{rows_html}</tbody>'
+            f'</table>'
+        )
+        st.markdown(table_html, unsafe_allow_html=True)
+        st.markdown("")
     else:
         st.info("No problems data extracted.")
 
-    # Meeting effectiveness
+    # Meeting effectiveness — table format
     st.markdown("#### 📊 Meeting Effectiveness")
     me_list = analysis.get("meeting_effectiveness", [])
     if me_list:
-        type_colors = {"VP":"#7c3aed","Expert":"#059669","Panelist":"#d97706"}
-        for me in sorted(me_list, key=lambda x: x.get("effectiveness_score",0), reverse=True):
-            score = me.get("effectiveness_score", 0)
-            tc = type_colors.get(me.get("type","Expert"), "#7eb8f7")
-            is_top = me.get("is_most_impactful", False)
-            border = "2px solid #d97706" if is_top else "1px solid #e2e8f0"
-            st.markdown(
-                f'<div style="background:#f8fafc;border:{border};border-radius:10px;padding:14px 18px;margin-bottom:8px;">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                f'<div style="display:flex;align-items:center;gap:10px;">'
-                f'{"🏆 " if is_top else ""}'
-                f'<span style="color:{tc};font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">{me.get("type","")}</span>'
-                f'<span style="color:#475569;font-size:12px;">{me.get("meeting_ref","")}</span>'
-                f'</div>'
-                f'<div style="color:#d97706;font-size:16px;">{"★"*score}{"☆"*(5-score)}</div>'
-                f'</div>'
-                f'<div style="color:#374151;font-size:13px;margin-top:8px;">{me.get("impact","")}</div>'
-                f'</div>',
-                unsafe_allow_html=True
+        type_bg   = {"VP":"#f5f3ff","Expert":"#f0fdf4","Panelist":"#fefce8"}
+        type_tc   = {"VP":"#7c3aed","Expert":"#059669","Panelist":"#d97706"}
+        rows_html = ""
+        for i, me in enumerate(sorted(me_list, key=lambda x: x.get("effectiveness_score",0), reverse=True)):
+            score    = me.get("effectiveness_score", 0)
+            mtype    = me.get("type", "")
+            is_top   = me.get("is_most_impactful", False)
+            bg       = type_bg.get(mtype, "#f8fafc")
+            tc       = type_tc.get(mtype, "#374151")
+            row_bg   = "#fffbeb" if is_top else ("#f8fafc" if i % 2 == 0 else "#ffffff")
+            stars    = "★" * score + "☆" * (5 - score)
+            trophy   = "🏆 " if is_top else ""
+            rows_html += (
+                f'<tr style="background:{row_bg};">'
+                f'<td style="padding:10px 14px;width:20%;">'
+                f'<span style="background:{bg};color:{tc};border-radius:6px;padding:3px 8px;font-size:11px;font-weight:700;">{trophy}{mtype}</span>'
+                f'</td>'
+                f'<td style="padding:10px 14px;font-size:12px;color:#374151;width:20%;">{me.get("meeting_ref","")}</td>'
+                f'<td style="padding:10px 14px;font-size:13px;color:#1e293b;line-height:1.5;width:45%;">{me.get("impact","")}</td>'
+                f'<td style="padding:10px 14px;text-align:center;width:15%;font-size:15px;color:#d97706;">{stars}</td>'
+                f'</tr>'
             )
+        table_html = (
+            f'<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;font-family:inherit;">'
+            f'<thead>'
+            f'<tr style="background:#f1f5f9;">'
+            f'<th style="padding:10px 14px;text-align:left;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Type</th>'
+            f'<th style="padding:10px 14px;text-align:left;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Session</th>'
+            f'<th style="padding:10px 14px;text-align:left;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Impact</th>'
+            f'<th style="padding:10px 14px;text-align:center;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Score</th>'
+            f'</tr></thead>'
+            f'<tbody>{rows_html}</tbody>'
+            f'</table>'
+        )
+        st.markdown(table_html, unsafe_allow_html=True)
+        st.markdown("")
 
     # Most impactful meeting
     mim = analysis.get("most_impactful_meeting", {})
