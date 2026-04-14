@@ -2,11 +2,20 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import io
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 from anthropic import Anthropic
 from datetime import datetime
-import io
+
+# Google Drive imports
+try:
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+    from google.oauth2 import service_account
+    GDRIVE_AVAILABLE = True
+except ImportError:
+    GDRIVE_AVAILABLE = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -198,7 +207,7 @@ def classify_file(filename: str) -> str:
 
 
 def read_file_text(path: str, max_chars: int = 8000) -> str:
-    """Read text from PDF, DOCX, or TXT file."""
+    """Read text from a local file path."""
     if not path or not os.path.exists(path):
         return ""
     ext = os.path.splitext(path)[1].lower()
@@ -216,43 +225,157 @@ def read_file_text(path: str, max_chars: int = 8000) -> str:
     return ""
 
 
-def scan_venture_folder(folder_path: str) -> dict:
+def read_file_bytes(file_bytes: bytes, filename: str, max_chars: int = 8000) -> str:
+    """Read text from file bytes (used for Google Drive downloads)."""
+    ext = os.path.splitext(filename)[1].lower()
+    try:
+        if ext == ".pdf":
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            return "\n".join(page.get_text() for page in doc)[:max_chars]
+        elif ext in [".docx", ".doc"]:
+            doc = DocxDocument(io.BytesIO(file_bytes))
+            return "\n".join(p.text for p in doc.paragraphs)[:max_chars]
+        elif ext in [".txt", ".md"]:
+            return file_bytes.decode("utf-8", errors="ignore")[:max_chars]
+    except Exception as e:
+        return f"[Could not read file bytes: {e}]"
+    return ""
+
+
+@st.cache_resource
+def get_gdrive_service():
+    """Build and cache Google Drive service using Streamlit secrets."""
+    if not GDRIVE_AVAILABLE:
+        return None
+    try:
+        creds_dict = dict(st.secrets["gdrive_service_account"])
+        # Fix escaped newlines in private key
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict,
+            scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        )
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+    except Exception as e:
+        return None
+
+
+def gdrive_find_venture_folder(service, venture_name: str, parent_folder_name: str = "Venture_Docs") -> str | None:
+    """Find a venture subfolder by name inside the parent Venture_Docs folder."""
+    try:
+        # First find the parent Venture_Docs folder
+        res = service.files().list(
+            q=f"name='{parent_folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            fields="files(id, name)",
+            pageSize=5
+        ).execute()
+        parents = res.get("files", [])
+        if not parents:
+            return None
+        parent_id = parents[0]["id"]
+
+        # Then find the venture subfolder inside it
+        res2 = service.files().list(
+            q=f"name='{venture_name}' and mimeType='application/vnd.google-apps.folder' "
+              f"and '{parent_id}' in parents and trashed=false",
+            fields="files(id, name)",
+            pageSize=5
+        ).execute()
+        folders = res2.get("files", [])
+        return folders[0]["id"] if folders else None
+    except Exception:
+        return None
+
+
+def gdrive_list_files(service, folder_id: str) -> list:
+    """List all supported files in a Drive folder."""
+    supported_mimes = {
+        "application/pdf": ".pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "text/plain": ".txt",
+    }
+    try:
+        res = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="files(id, name, mimeType, size)",
+            pageSize=50
+        ).execute()
+        files = []
+        for f in res.get("files", []):
+            ext = os.path.splitext(f["name"])[1].lower()
+            mime = f.get("mimeType", "")
+            if ext in SUPPORTED_EXTS or mime in supported_mimes:
+                files.append(f)
+        return files
+    except Exception:
+        return []
+
+
+def gdrive_download_file(service, file_id: str) -> bytes:
+    """Download a file from Drive and return raw bytes."""
+    try:
+        request = service.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+    except Exception:
+        return b""
+
+
+def scan_venture_folder(venture_name: str, folder_path: str = "") -> dict:
     """
-    Scan a venture folder and return classified files.
-    Returns:
-      {
-        "deck":     [{"path": ..., "name": ..., "text": ...}],
-        "vp":       [...],
-        "expert":   [...],
-        "panelist": [...],
-        "other":    [...],
-        "all_files": [...],   # every file found
-        "folder_exists": bool,
-        "total": int,
-      }
+    Scan venture files from Google Drive (primary) or local path (fallback).
+    Matches venture folder by name inside Venture_Docs on Drive.
+    Returns classified file dict.
     """
     result = {"deck": [], "vp": [], "expert": [], "panelist": [], "other": [],
-              "all_files": [], "folder_exists": False, "total": 0}
+              "all_files": [], "folder_exists": False, "total": 0,
+              "source": "none"}
 
-    if not folder_path or not os.path.isdir(folder_path):
-        return result
+    # ── Try Google Drive first ─────────────────────────────────────────────
+    service = get_gdrive_service()
+    lookup_name = folder_path.strip() if folder_path.strip() else venture_name.strip()
 
-    result["folder_exists"] = True
+    if service and lookup_name:
+        folder_id = gdrive_find_venture_folder(service, lookup_name)
+        if folder_id:
+            result["folder_exists"] = True
+            result["source"] = "gdrive"
+            drive_files = gdrive_list_files(service, folder_id)
+            for f in drive_files:
+                fname = f["name"]
+                ftype = classify_file(fname)
+                max_c = 6000 if ftype == "deck" else 4000
+                raw = gdrive_download_file(service, f["id"])
+                text = read_file_bytes(raw, fname, max_chars=max_c) if raw else ""
+                entry = {"path": f"gdrive://{f['id']}", "name": fname,
+                         "type": ftype, "text": text}
+                result[ftype].append(entry)
+                result["all_files"].append(entry)
+            result["total"] = len(result["all_files"])
+            return result
 
-    for fname in sorted(os.listdir(folder_path)):
-        ext = os.path.splitext(fname)[1].lower()
-        if ext not in SUPPORTED_EXTS:
-            continue
-        fpath = os.path.join(folder_path, fname)
-        ftype = classify_file(fname)
-        # Deck gets more chars; transcripts get 4000 each
-        max_c = 6000 if ftype == "deck" else 4000
-        text = read_file_text(fpath, max_chars=max_c)
-        entry = {"path": fpath, "name": fname, "type": ftype, "text": text}
-        result[ftype].append(entry)
-        result["all_files"].append(entry)
+    # ── Fallback: local path ───────────────────────────────────────────────
+    if folder_path and os.path.isdir(folder_path):
+        result["folder_exists"] = True
+        result["source"] = "local"
+        for fname in sorted(os.listdir(folder_path)):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in SUPPORTED_EXTS:
+                continue
+            fpath = os.path.join(folder_path, fname)
+            ftype = classify_file(fname)
+            max_c = 6000 if ftype == "deck" else 4000
+            text = read_file_text(fpath, max_chars=max_c)
+            entry = {"path": fpath, "name": fname, "type": ftype, "text": text}
+            result[ftype].append(entry)
+            result["all_files"].append(entry)
+        result["total"] = len(result["all_files"])
 
-    result["total"] = len(result["all_files"])
     return result
 
 
@@ -571,21 +694,37 @@ def render_venture_detail(venture_row: pd.Series, meetings: dict, data: dict):
     pa_df = meetings.get("Panelist", pd.DataFrame())
 
     folder_path = str(venture_row.get("Folder_Path", "")).strip()
-    scanned = scan_venture_folder(folder_path)
+    scanned = scan_venture_folder(venture_name=vname, folder_path=folder_path)
+
+    # ── Source badge ───────────────────────────────────────────────────────
+    source = scanned.get("source", "none")
+    source_badge = {
+        "gdrive": '<span style="background:#0d2e1a;color:#4ade80;border:1px solid #166534;padding:2px 10px;border-radius:20px;font-size:11px;">☁️ Google Drive</span>',
+        "local":  '<span style="background:#0d1f3c;color:#60a5fa;border:1px solid #1e40af;padding:2px 10px;border-radius:20px;font-size:11px;">💾 Local</span>',
+        "none":   '<span style="background:#1a1207;color:#fbbf24;border:1px solid #78350f;padding:2px 10px;border-radius:20px;font-size:11px;">⚠️ No files</span>',
+    }.get(source, "")
 
     # ── Metrics row ────────────────────────────────────────────────────────
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("VP Sessions", len(vp_df))
     c2.metric("Expert Sessions", len(ex_df))
     c3.metric("Panelist Calls", len(pa_df))
-    c4.metric("Files in Folder", scanned["total"] if scanned["folder_exists"] else "—")
-    c5.metric("Pitch Deck", f"{len(scanned['deck'])} file(s)" if scanned["deck"] else ("No deck" if scanned["folder_exists"] else "No folder"))
+    c4.metric("Files Found", scanned["total"] if scanned["folder_exists"] else "—")
+    c5.metric("Pitch Deck", f"{len(scanned['deck'])} file(s)" if scanned["deck"] else ("No deck" if scanned["folder_exists"] else "—"))
+
+    if source_badge:
+        st.markdown(f'<div style="margin-bottom:8px;">Files source: {source_badge}</div>', unsafe_allow_html=True)
 
     # ── Folder file browser ────────────────────────────────────────────────
-    if not folder_path:
-        st.info("💡 Add a **Folder_Path** column to your Ventures sheet pointing to this venture's folder to enable file-based analysis.")
-    elif not scanned["folder_exists"]:
-        st.error(f"Folder not found: `{folder_path}`")
+    if not scanned["folder_exists"]:
+        if source == "none":
+            gdrive_ok = get_gdrive_service() is not None
+            if gdrive_ok:
+                st.warning(f"⚠️ No folder named **'{vname}'** found in Google Drive under Venture_Docs. "
+                           f"Make sure the folder name matches exactly.")
+            else:
+                st.info("💡 Google Drive not configured yet. Add `gdrive_service_account` to Streamlit secrets to enable Drive file reading. "
+                        "See setup instructions in the README.")
     else:
         type_colors = {"deck":"#fbbf24","vp":"#c4b5fd","expert":"#6ee7b7","panelist":"#fcd34d","other":"#94a3b8"}
         type_labels = {"deck":"📋 Deck","vp":"🎙 VP","expert":"💡 Expert","panelist":"🏛 Panelist","other":"📄 Other"}
