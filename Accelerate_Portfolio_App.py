@@ -283,9 +283,17 @@ def ai_extract_sessions(venture_name: str, loaded_files: dict) -> dict:
         return {"sessions": [], "extraction_notes": "No files found in folder."}
 
     # Build session text — cap each file at 3500 chars to fit more files
+    # Map internal type to display label used in JSON output
+    TYPE_LABEL = {
+        "vp":       "VP Session",
+        "expert":   "Expert Session",
+        "panelist": "Panelist Call",
+        "other":    "Other",
+    }
     files_text = ""
     for entry in session_files:
-        files_text += f"\n\n{'='*60}\nFILE: {entry['name']}  (type: {entry['type']})\n{'='*60}\n"
+        forced_type = TYPE_LABEL.get(entry["type"], "Other")
+        files_text += f"\n\n{'='*60}\nFILE: {entry['name']}\nSESSION TYPE (MANDATORY — use exactly this): {forced_type}\n{'='*60}\n"
         files_text += (entry["text"] or "[empty]")[:3500]
 
     # Build context text from deck/other docs
@@ -323,6 +331,8 @@ RULES:
 - Each file may contain one or multiple sessions
 - For deck/brief files: extract venture_brief and problem_statement (not as a session)
 - For session files: extract as individual sessions
+- CRITICAL: The "type" field in your JSON MUST exactly match the "SESSION TYPE (MANDATORY)" label shown above each file. Do not override it based on content — trust the filename classification.
+- Valid type values: "VP Session", "Expert Session", "Panelist Call", "Other"
 
 Return ONLY valid JSON, no markdown:
 {{
