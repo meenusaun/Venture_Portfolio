@@ -20,7 +20,7 @@ except ImportError:
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Venture Intelligence Report",
+    page_title="Venture Intelligence | NEN Resources Network",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -68,8 +68,9 @@ FILE_TYPE_KEYWORDS = {
                  "expert_session", "expert session", "mentor"],
     "panelist": ["panel", "panelist", "panellist",
                  "discussion with"],
+    "context":  ["growth plan", "impact dashboard", "score", "evaluation form"],
 }
-SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".txt", ".md"}
+SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".txt", ".md", ".xlsx", ".xls"}
 
 
 def classify_file(filename: str) -> str:
@@ -109,6 +110,15 @@ def read_file_bytes(file_bytes: bytes, filename: str, max_chars: int = 12000) ->
             return "\n".join(p.text for p in doc.paragraphs)[:max_chars]
         elif ext in [".txt", ".md"]:
             return file_bytes.decode("utf-8", errors="ignore")[:max_chars]
+        elif ext in [".xlsx", ".xls"]:
+            try:
+                dfs = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+                parts = []
+                for sheet, df in dfs.items():
+                    parts.append(f"[Sheet: {sheet}]\n{df.to_string(index=False)}")
+                return "\n\n".join(parts)[:max_chars]
+            except Exception:
+                return "[Excel file — could not parse]"
     except Exception as e:
         return f"[Could not read: {e}]"
     return ""
@@ -200,13 +210,29 @@ def load_venture_files(venture_name: str, folder_path: str = "") -> dict:
         if folder_id:
             result["folder_exists"] = True
             result["source"] = "gdrive"
-            for f in gdrive_list_files(service, folder_id):
+            drive_files = gdrive_list_files(service, folder_id)
+
+            # Deduplicate: if same base name exists as both .docx and .pdf, keep PDF only
+            seen_bases = {}
+            for f in drive_files:
+                base = os.path.splitext(f["name"])[0].lower().strip()
+                ext  = os.path.splitext(f["name"])[1].lower()
+                if base not in seen_bases:
+                    seen_bases[base] = f
+                else:
+                    # Prefer PDF over docx for transcripts
+                    existing_ext = os.path.splitext(seen_bases[base]["name"])[1].lower()
+                    if ext == ".pdf" and existing_ext in [".docx", ".doc"]:
+                        seen_bases[base] = f  # replace with PDF
+            deduped_files = list(seen_bases.values())
+
+            for f in deduped_files:
                 fname = f["name"]
                 ftype = classify_file(fname)
-                raw = gdrive_download(service, f["id"])
-                text = read_file_bytes(raw, fname, 10000 if ftype=="deck" else 14000) if raw else ""
+                raw   = gdrive_download(service, f["id"])
+                text  = read_file_bytes(raw, fname, 10000 if ftype in ("deck","context") else 14000) if raw else ""
                 entry = {"name": fname, "type": ftype, "text": text}
-                result[ftype].append(entry)
+                result.setdefault(ftype, []).append(entry)
                 result["files"].append(entry)
             result["total"] = len(result["files"])
             return result
@@ -245,30 +271,45 @@ def load_excel(file_bytes: bytes) -> pd.DataFrame:
 # AI — STEP 1: EXTRACT SESSIONS FROM FILES
 # ─────────────────────────────────────────────────────────────────────────────
 def ai_extract_sessions(venture_name: str, loaded_files: dict) -> dict:
+    # Separate files by category — process context/deck separately from sessions
+    session_files  = [e for e in loaded_files["files"] if e["type"] not in ("deck","context")]
+    context_files  = [e for e in loaded_files["files"] if e["type"] in ("deck","context","other")]
+
+    if not session_files and not context_files:
+        return {"sessions": [], "extraction_notes": "No files found in folder."}
+
+    # Build session text — cap each file at 3500 chars to fit more files
     files_text = ""
-    for entry in loaded_files["files"]:
-        if entry["type"] == "deck":
-            continue
+    for entry in session_files:
         files_text += f"\n\n{'='*60}\nFILE: {entry['name']}  (type: {entry['type']})\n{'='*60}\n"
-        files_text += entry["text"] or "[empty]"
+        files_text += (entry["text"] or "[empty]")[:3500]
+
+    # Build context text from deck/other docs
+    context_text = ""
+    for entry in context_files:
+        context_text += f"\n\n--- CONTEXT FILE: {entry['name']} ---\n"
+        context_text += (entry["text"] or "[empty]")[:2000]
 
     if not files_text.strip():
-        return {"sessions": [], "extraction_notes": "Only deck files found — no session transcripts to extract from."}
+        return {"sessions": [], "extraction_notes": "Only deck/context files found — no session transcripts."}
 
     prompt = f"""You are analyzing all documents for startup venture "{venture_name}".
 You will extract two things:
-1. Venture context (brief, problem statement, solution) from any venture overview / deck / brief documents
+1. Venture context (brief, problem statement, solution) from context/deck documents
 2. Every individual meeting or session from transcript files
 
 FILE NAMING GUIDE (use this to identify session type):
 - Files with "expert_connect" or "expert" → Expert Session
-- Files with "vp1", "vp2", "vp3", "VP", "opportunity assessment" → VP Session
-- Files with "panel", "panelist", "panellist" → Panelist Call
-- Files with "deck", "pitch", "presentation" → Venture deck (extract venture info, not a session)
+- Files with "VP1", "VP2", "VP3", "opportunity assessment", "deep dive" → VP Session
+- Files with "panel", "panelist", "panellist", "discussion with", "panel evaluation" → Panelist Call
+- Files with "deck", "pitch", "presentation" → Venture deck
 - Any other file → extract as best you can
 
-FILES:
-{files_text[:16000]}
+CONTEXT DOCUMENTS (for venture info):
+{context_text[:3000]}
+
+SESSION TRANSCRIPT FILES:
+{files_text[:18000]}
 
 RULES:
 - Do NOT invent sessions — only extract what is clearly present
@@ -304,7 +345,7 @@ Return ONLY valid JSON, no markdown:
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=3000,
+        max_tokens=4000,
         messages=[{"role": "user", "content": prompt}]
     )
     raw = response.content[0].text.strip()
