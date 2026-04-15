@@ -59,16 +59,18 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 FILE_TYPE_KEYWORDS = {
     "deck":     ["deck", "pitch", "presentation"],
-    "vp":       ["vp1", "vp2", "vp3", "vp4", "vp5", "vp_", "_vp",
+    "vp":       ["vp1", "vp2", "vp3", "vp4", "vp5", "vp_", "_vp", "vp2 ",
                  "opportunity assessment", "opportunity_assessment",
                  "opportunity assessment transcript",
                  "deep dive", "deep_dive", "deepdive",
-                 "vp call", "vp-call"],
+                 "vp call", "vp-call", "vp transcript", "vp1 transcript",
+                 "vp2 transcript", "vp3 transcript"],
     "expert":   ["expert_connect", "expert connect", "expertconnect",
                  "expert_session", "expert session", "mentor"],
-    "panelist": ["panel", "panelist", "panellist",
-                 "discussion with"],
-    "context":  ["growth plan", "impact dashboard", "score", "evaluation form"],
+    "panelist": ["panel evaluation", "panel score", "panelist", "panellist",
+                 "panel transcript", "discussion with", "panel "],
+    "context":  ["growth plan", "impact dashboard", "score sheet",
+                 "evaluation form", "strategic growth", "blueprint"],
 }
 SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".txt", ".md", ".xlsx", ".xls"}
 
@@ -212,18 +214,20 @@ def load_venture_files(venture_name: str, folder_path: str = "") -> dict:
             result["source"] = "gdrive"
             drive_files = gdrive_list_files(service, folder_id)
 
-            # Deduplicate: if same base name exists as both .docx and .pdf, keep PDF only
+            # Deduplicate: if exact same base name exists as both .docx AND .pdf,
+            # keep only the PDF. Different filenames are always kept even if similar.
             seen_bases = {}
             for f in drive_files:
                 base = os.path.splitext(f["name"])[0].lower().strip()
                 ext  = os.path.splitext(f["name"])[1].lower()
-                if base not in seen_bases:
-                    seen_bases[base] = f
+                ftype = classify_file(f["name"])
+                key  = (base, ftype)  # only dedup if same name AND same type
+                if key not in seen_bases:
+                    seen_bases[key] = f
                 else:
-                    # Prefer PDF over docx for transcripts
-                    existing_ext = os.path.splitext(seen_bases[base]["name"])[1].lower()
+                    existing_ext = os.path.splitext(seen_bases[key]["name"])[1].lower()
                     if ext == ".pdf" and existing_ext in [".docx", ".doc"]:
-                        seen_bases[base] = f  # replace with PDF
+                        seen_bases[key] = f
             deduped_files = list(seen_bases.values())
 
             for f in deduped_files:
@@ -298,12 +302,15 @@ You will extract two things:
 1. Venture context (brief, problem statement, solution) from context/deck documents
 2. Every individual meeting or session from transcript files
 
-FILE NAMING GUIDE (use this to identify session type):
-- Files with "expert_connect" or "expert" → Expert Session
-- Files with "VP1", "VP2", "VP3", "opportunity assessment", "deep dive" → VP Session
-- Files with "panel", "panelist", "panellist", "discussion with", "panel evaluation" → Panelist Call
-- Files with "deck", "pitch", "presentation" → Venture deck
-- Any other file → extract as best you can
+FILE CLASSIFICATION (already applied to filenames — use the (type:) label shown):
+- type: expert  → Expert Session transcript
+- type: vp      → VP Session transcript
+- type: panelist → Panelist Call transcript  
+- type: deck    → Pitch deck (venture info only, not a session)
+- type: context → Supporting document (growth plan, scorecard etc.)
+- type: other   → Read and extract whatever sessions you find
+
+IMPORTANT: Even if a file is type: context or other, still extract any session content if present.
 
 CONTEXT DOCUMENTS (for venture info):
 {context_text[:3000]}
