@@ -214,27 +214,36 @@ def load_venture_files(venture_name: str, folder_path: str = "") -> dict:
             result["source"] = "gdrive"
             drive_files = gdrive_list_files(service, folder_id)
 
-            # Deduplicate: if exact same base name exists as both .docx AND .pdf,
-            # keep only the PDF. Different filenames are always kept even if similar.
+            # Deduplicate: only remove true duplicates (same name, same ext).
+            # Keep both .docx and .pdf versions — they may have different content.
+            # Exception: if base name is identical AND one is PDF and other is DOCX,
+            # keep PDF only (avoids double-counting Expert Connect files).
             seen_bases = {}
             for f in drive_files:
-                base = os.path.splitext(f["name"])[0].lower().strip()
-                ext  = os.path.splitext(f["name"])[1].lower()
+                base  = os.path.splitext(f["name"])[0].lower().strip()
+                ext   = os.path.splitext(f["name"])[1].lower()
                 ftype = classify_file(f["name"])
-                key  = (base, ftype)  # only dedup if same name AND same type
-                if key not in seen_bases:
-                    seen_bases[key] = f
+                # For VP and panelist files — never deduplicate, always keep all
+                if ftype in ("vp", "panelist"):
+                    seen_bases[f["name"].lower()] = f
                 else:
-                    existing_ext = os.path.splitext(seen_bases[key]["name"])[1].lower()
-                    if ext == ".pdf" and existing_ext in [".docx", ".doc"]:
+                    key = (base, ftype)
+                    if key not in seen_bases:
                         seen_bases[key] = f
+                    else:
+                        existing_ext = os.path.splitext(seen_bases[key]["name"])[1].lower()
+                        if ext == ".pdf" and existing_ext in [".docx", ".doc"]:
+                            seen_bases[key] = f
             deduped_files = list(seen_bases.values())
 
             for f in deduped_files:
                 fname = f["name"]
                 ftype = classify_file(fname)
                 raw   = gdrive_download(service, f["id"])
-                text  = read_file_bytes(raw, fname, 10000 if ftype in ("deck","context") else 14000) if raw else ""
+                text  = read_file_bytes(raw, fname, 16000) if raw else ""
+                # If VP file has very little text, it may be a slide deck — note it
+                if ftype == "vp" and len(text.strip()) < 200:
+                    text = f"[VP document — limited text extracted, likely slide deck or image-based PDF]\nFilename: {fname}\n" + text
                 entry = {"name": fname, "type": ftype, "text": text}
                 result.setdefault(ftype, []).append(entry)
                 result["files"].append(entry)
@@ -276,8 +285,9 @@ def load_excel(file_bytes: bytes) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 def ai_extract_sessions(venture_name: str, loaded_files: dict) -> dict:
     # Separate files by category — process context/deck separately from sessions
-    session_files  = [e for e in loaded_files["files"] if e["type"] not in ("deck","context")]
-    context_files  = [e for e in loaded_files["files"] if e["type"] in ("deck","context","other")]
+    session_files  = [e for e in loaded_files["files"] if e["type"] not in ("deck","context","panelist_score")]
+    context_files  = [e for e in loaded_files["files"] if e["type"] in ("deck","context")]
+    # Note: panelist score sheets (xlsx) go to context, all transcripts including "other" go to session extraction
 
     if not session_files and not context_files:
         return {"sessions": [], "extraction_notes": "No files found in folder."}
@@ -305,6 +315,9 @@ def ai_extract_sessions(venture_name: str, loaded_files: dict) -> dict:
     if not files_text.strip():
         return {"sessions": [], "extraction_notes": "Only deck/context files found — no session transcripts."}
 
+    # Debug: log what files are being sent to Claude
+    file_list = [f"{e['name']} [{e['type']}]" for e in session_files]
+
     prompt = f"""You are analyzing all documents for startup venture "{venture_name}".
 You will extract two things:
 1. Venture context (brief, problem statement, solution) from context/deck documents
@@ -323,20 +336,24 @@ IMPORTANT: Even if a file is type: context or other, still extract any session c
 CONTEXT DOCUMENTS (for venture info):
 {context_text[:3000]}
 
-SESSION TRANSCRIPT FILES:
+FILES BEING PROCESSED (you must extract sessions from ALL of these):
+{chr(10).join(f"  - {{e['name']}} → TYPE: {{TYPE_LABEL.get(e['type'],'Other')}}" for e in session_files)}
+
+SESSION TRANSCRIPT CONTENTS:
 {files_text[:18000]}
 
 RULES:
-- Do NOT invent sessions — only extract what is clearly present
+- Do NOT invent sessions — only extract what is clearly present in each file
 - Each file may contain one or multiple sessions
-- For deck/brief files: extract venture_brief and problem_statement (not as a session)
-- For session files: extract as individual sessions
-- CRITICAL: The "type" field in your JSON MUST exactly match the "SESSION TYPE (MANDATORY)" label shown above each file. Do not override it based on content — trust the filename classification.
-- Valid type values: "VP Session", "Expert Session", "Panelist Call", "Other"
+- For deck/brief/context files: extract venture_brief and problem_statement only
+- For session files: ALWAYS create at least one session entry per file, even if transcript is partial or the file is a slide deck
+- If a VP file has limited text (slide deck format): create a VP Session entry with date from filename, any visible participants, notes = 'VP session document — slide deck or image-based format'
+- CRITICAL: The type field MUST exactly match the SESSION TYPE (MANDATORY) label shown above each file. Never change VP Session to Panelist Call or any other type.
+- Valid type values: VP Session, Expert Session, Panelist Call, Other
 
 Return ONLY valid JSON, no markdown:
 {{
-  "extraction_notes": "brief summary: how many sessions found, what types, any issues",
+  "extraction_notes": "brief summary: how many sessions found, what types, which files were read, any issues",
   "venture_brief": "2-3 sentence description of what this venture does, extracted from files (or Not found)",
   "problem_statement": "the core problem this venture is solving, extracted from files (or Not found)",
   "solution_summary": "what the venture's solution is, extracted from files (or Not found)",
