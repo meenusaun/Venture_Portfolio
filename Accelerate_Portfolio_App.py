@@ -20,7 +20,7 @@ except ImportError:
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Venture Portfolio Report",
+    page_title="Venture Intelligence Report",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -61,10 +61,13 @@ FILE_TYPE_KEYWORDS = {
     "deck":     ["deck", "pitch", "presentation"],
     "vp":       ["vp1", "vp2", "vp3", "vp4", "vp5", "vp_", "_vp",
                  "opportunity assessment", "opportunity_assessment",
+                 "opportunity assessment transcript",
+                 "deep dive", "deep_dive", "deepdive",
                  "vp call", "vp-call"],
     "expert":   ["expert_connect", "expert connect", "expertconnect",
                  "expert_session", "expert session", "mentor"],
-    "panelist": ["panel", "panelist", "panellist"],
+    "panelist": ["panel", "panelist", "panellist",
+                 "discussion with"],
 }
 SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".txt", ".md"}
 
@@ -735,11 +738,30 @@ def render_venture_detail(venture_row: pd.Series):
 
     st.markdown(f"## 🚀 {vname}")
     hub_member = venture_row.get("Hub_Team_Member","—")
-    c1, c2, c3, c4 = st.columns(4)
+    onboard_month  = venture_row.get("Onboarding_Month","—")
+    onboard_year   = venture_row.get("Onboarding_Year","—")
+    onboard_label  = f"{onboard_month} {onboard_year}" if onboard_month != "—" else "—"
+    venture_type   = venture_row.get("Venture_Type","—")
+    program_name   = venture_row.get("Program_Name","—")
+
+    # Type badge
+    vtype_colors = {"Startup":("#dbeafe","#1e40af"), "SME":("#fef3c7","#92400e")}
+    vt_bg, vt_tc = vtype_colors.get(venture_type, ("#f1f5f9","#475569"))
+    vtype_badge = f'<span style="background:{vt_bg};color:{vt_tc};border:1px solid {vt_tc};padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;">{venture_type}</span>'
+
+    # Program badge
+    prog_colors = {"Core":("#d1fae5","#065f46"), "Select":("#ede9fe","#5b21b6")}
+    pr_bg, pr_tc = prog_colors.get(program_name, ("#f1f5f9","#475569"))
+    prog_badge = f'<span style="background:{pr_bg};color:{pr_tc};border:1px solid {pr_tc};padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;">{program_name}</span>'
+
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     with c1: st.markdown(f"**Sector** &nbsp; {venture_row.get('Sector','—')}", unsafe_allow_html=True)
     with c2: st.markdown(f"**Founder** &nbsp; {venture_row.get('Founder_Name','—')}", unsafe_allow_html=True)
     with c3: st.markdown(f"**Hub Team** &nbsp; {hub_member}", unsafe_allow_html=True)
-    with c4: st.markdown(status_badge(st.session_state.extraction_cache.get(vid,{}).get("current_status","Active")), unsafe_allow_html=True)
+    with c4: st.markdown(f"**Onboarded** &nbsp; {onboard_label}", unsafe_allow_html=True)
+    with c5: st.markdown(vtype_badge, unsafe_allow_html=True)
+    with c6: st.markdown(prog_badge, unsafe_allow_html=True)
+    with c7: st.markdown(status_badge(st.session_state.extraction_cache.get(vid,{}).get("current_status","Active")), unsafe_allow_html=True)
 
     st.markdown(
         f'<div class="nen-card"><em style="color:#374151;">"{venture_row.get("Description","")}"</em></div>',
@@ -896,7 +918,7 @@ def render_portfolio_view(ventures_df: pd.DataFrame):
             f'<div class="nen-card">'
             f'<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">'
             f'<div><div style="font-weight:700;font-size:16px;color:#111827;">{row.get("Venture_Name","")}</div>'
-            f'<div style="color:#475569;font-size:12px;margin-top:2px;">{row.get("Founder_Name","")} · {row.get("Sector","")} · <span style="color:#2563eb;">👤 {row.get("Hub_Team_Member","—")}</span></div></div>'
+            f'<div style="color:#475569;font-size:12px;margin-top:2px;">{row.get("Founder_Name","")} · {row.get("Sector","")} · <span style="color:#2563eb;">👤 {row.get("Hub_Team_Member","—")}</span> · 📅 {row.get("Onboarding_Month","—")} {row.get("Onboarding_Year","")} · {row.get("Venture_Type","—")} · {row.get("Program_Name","—")}</div></div>'
             f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
             f'{stage_badge(st.session_state.extraction_cache.get(vid,{}).get("stage_inferred","—"))}'
             f'&nbsp;&nbsp;{status_badge(st.session_state.extraction_cache.get(vid,{}).get("current_status","Active"))}'
@@ -1089,7 +1111,24 @@ with st.sidebar:
             )
             if selected_hub and selected_hub != "All Ventures":
                 filtered_df = ventures_df[ventures_df["Hub_Team_Member"] == selected_hub].copy()
-                st.info(f"Showing {len(filtered_df)} venture(s) assigned to {selected_hub}")
+
+        # ── Venture Type filter ───────────────────────────────────────────
+        if "Venture_Type" in ventures_df.columns:
+            vtype_opts = ["All Types"] + sorted(ventures_df["Venture_Type"].dropna().unique().tolist())
+            selected_vtype = st.selectbox("🏢 Venture Type", vtype_opts)
+            if selected_vtype != "All Types":
+                filtered_df = filtered_df[filtered_df["Venture_Type"] == selected_vtype].copy()
+
+        # ── Program filter ────────────────────────────────────────────────
+        if "Program_Name" in ventures_df.columns:
+            prog_opts = ["All Programs"] + sorted(ventures_df["Program_Name"].dropna().unique().tolist())
+            selected_prog = st.selectbox("📋 Program", prog_opts)
+            if selected_prog != "All Programs":
+                filtered_df = filtered_df[filtered_df["Program_Name"] == selected_prog].copy()
+
+        # Show filter summary
+        if len(filtered_df) < len(ventures_df):
+            st.info(f"Showing {len(filtered_df)} of {len(ventures_df)} ventures")
 
         st.markdown("---")
         view_mode = st.selectbox("View Mode", ["Portfolio Overview", "Venture Deep-Dive"])
