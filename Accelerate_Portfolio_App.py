@@ -284,39 +284,41 @@ def load_excel(file_bytes: bytes) -> pd.DataFrame:
 # AI — STEP 1: EXTRACT SESSIONS FROM FILES
 # ─────────────────────────────────────────────────────────────────────────────
 def ai_extract_sessions(venture_name: str, loaded_files: dict) -> dict:
-    # Separate files by category — process context/deck separately from sessions
-    session_files  = [e for e in loaded_files["files"] if e["type"] not in ("deck","context","panelist_score")]
-    context_files  = [e for e in loaded_files["files"] if e["type"] in ("deck","context")]
-    # Note: panelist score sheets (xlsx) go to context, all transcripts including "other" go to session extraction
-
-    if not session_files and not context_files:
-        return {"sessions": [], "extraction_notes": "No files found in folder."}
-
-    # Build session text — cap each file at 3500 chars to fit more files
-    # Map internal type to display label used in JSON output
     TYPE_LABEL = {
         "vp":       "VP Session",
         "expert":   "Expert Session",
         "panelist": "Panelist Call",
         "other":    "Other",
     }
+
+    # Separate files — sort so VP and Panelist come FIRST to guarantee inclusion
+    type_priority = {"vp": 0, "panelist": 1, "expert": 2, "other": 3}
+    all_session_files = [e for e in loaded_files["files"] if e["type"] not in ("deck","context")]
+    session_files = sorted(all_session_files, key=lambda e: type_priority.get(e["type"], 9))
+    context_files = [e for e in loaded_files["files"] if e["type"] in ("deck","context")]
+
+    if not session_files and not context_files:
+        return {"sessions": [], "extraction_notes": "No files found in folder."}
+
+    # Each file gets guaranteed space — VP/Panelist get 5000 chars, Expert get 3000
     files_text = ""
     for entry in session_files:
         forced_type = TYPE_LABEL.get(entry["type"], "Other")
-        files_text += f"\n\n{'='*60}\nFILE: {entry['name']}\nSESSION TYPE (MANDATORY — use exactly this): {forced_type}\n{'='*60}\n"
-        files_text += (entry["text"] or "[empty]")[:3500]
+        max_c = 5000 if entry["type"] in ("vp","panelist") else 3000
+        text = (entry["text"] or "").strip()
+        if not text:
+            text = f"[No text extracted from this file — likely image-based or scanned PDF]"
+        files_text += f"\n\n{'='*60}\nFILE: {entry['name']}\nSESSION TYPE (MANDATORY): {forced_type}\n{'='*60}\n"
+        files_text += text[:max_c]
 
-    # Build context text from deck/other docs
+    # Context text
     context_text = ""
     for entry in context_files:
         context_text += f"\n\n--- CONTEXT FILE: {entry['name']} ---\n"
         context_text += (entry["text"] or "[empty]")[:2000]
 
     if not files_text.strip():
-        return {"sessions": [], "extraction_notes": "Only deck/context files found — no session transcripts."}
-
-    # Debug: log what files are being sent to Claude
-    file_list = [f"{e['name']} [{e['type']}]" for e in session_files]
+        return {"sessions": [], "extraction_notes": "Only deck/context files found."}
 
     prompt = f"""You are analyzing all documents for startup venture "{venture_name}".
 You will extract two things:
