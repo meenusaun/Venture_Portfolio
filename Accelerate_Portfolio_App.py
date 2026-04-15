@@ -300,16 +300,15 @@ def ai_extract_sessions(venture_name: str, loaded_files: dict) -> dict:
     if not session_files and not context_files:
         return {"sessions": [], "extraction_notes": "No files found in folder."}
 
-    # Each file gets guaranteed space — VP/Panelist get 5000 chars, Expert get 3000
+    # Each file gets guaranteed space — 2500 chars each is sufficient for extraction
     files_text = ""
     for entry in session_files:
         forced_type = TYPE_LABEL.get(entry["type"], "Other")
-        max_c = 5000 if entry["type"] in ("vp","panelist") else 3000
         text = (entry["text"] or "").strip()
         if not text:
-            text = f"[No text extracted from this file — likely image-based or scanned PDF]"
+            text = "[No text extracted — likely image-based or scanned PDF. Create session entry from filename.]"
         files_text += f"\n\n{'='*60}\nFILE: {entry['name']}\nSESSION TYPE (MANDATORY): {forced_type}\n{'='*60}\n"
-        files_text += text[:max_c]
+        files_text += text[:2500]
 
     # Context text
     context_text = ""
@@ -342,7 +341,7 @@ FILES BEING PROCESSED (you must extract sessions from ALL of these):
 {chr(10).join(f"  - {{e['name']}} → TYPE: {{TYPE_LABEL.get(e['type'],'Other')}}" for e in session_files)}
 
 SESSION TRANSCRIPT CONTENTS:
-{files_text[:18000]}
+{files_text[:28000]}
 
 RULES:
 - Do NOT invent sessions — only extract what is clearly present in each file
@@ -381,7 +380,7 @@ Return ONLY valid JSON, no markdown:
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=4000,
+        max_tokens=5000,
         messages=[{"role": "user", "content": prompt}]
     )
     raw = response.content[0].text.strip()
